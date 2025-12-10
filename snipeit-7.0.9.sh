@@ -1,91 +1,102 @@
 #!/usr/bin/env bash
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-# Copyright (c) 2021-2025 community-scripts ORG
-# Author: Michel Roegl-Brunner (michelroegl-brunner)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
-# Source: https://snipeitapp.com/
+# LXC + Docker + Snipe-IT v7.0.9
+# Zaženi na Proxmox hostu: ./snipeit-docker-709.sh
 
-APP="SnipeIT709"
-var_tags="${var_tags:-asset-management;foss}"
-var_cpu="${var_cpu:-2}"
-var_ram="${var_ram:-2048}"
-var_disk="${var_disk:-4}"
-var_os="${var_os:-debian}"
-var_version="${var_version:-13}"
-var_unprivileged="${var_unprivileged:-1}"
+set -e
 
-PINNED_VERSION="v7.0.9"
+CTID=${CTID:-0}
 
-header_info "$APP"
-variables
-color
-catch_errors
+echo "=== Snipe-IT Docker installer (v7.0.9) ==="
+echo ""
 
-function update_script() {
-  header_info
-  check_container_storage
-  check_container_resources
-  if [[ ! -d /opt/snipe-it ]]; then
-    msg_error "No ${APP} Installation Found!"
-    exit
-  fi
-  if ! grep -q "client_max_body_size[[:space:]]\+100M;" /etc/nginx/conf.d/snipeit.conf; then
-    sed -i '/index index.php;/i \        client_max_body_size 100M;' /etc/nginx/conf.d/snipeit.conf
-  fi
+if [ "$CTID" = "0" ]; then
+    read -p "Vnesi CTID novega LXC (primer: 120): " CTID
+fi
 
-  # NE uporabljamo več check_for_gh_release, ker želimo prisilni "downgrade"
-  if true; then
-    msg_info "Stopping Services"
-    systemctl stop nginx
-    msg_ok "Services Stopped"
+echo "Ustvarjam LXC container $CTID ..."
 
-    msg_info "Creating backup"
-    mv /opt/snipe-it /opt/snipe-it-backup
-    msg_ok "Backup created"
+pct create $CTID local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+    --hostname snipeit \
+    --cores 2 \
+    --memory 2048 \
+    --swap 512 \
+    --rootfs local-lvm:8 \
+    --unprivileged 1 \
+    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+    --features nesting=1,keyctl=1
 
-    # Prisili fetch točno v7.0.9 v /opt/snipe-it
-    fetch_and_deploy_gh_release "snipe-it" "snipe/snipe-it" "tarball" "${PINNED_VERSION}" "/opt/snipe-it"
+pct start $CTID
+sleep 4
 
-    [[ "$(php -v 2>/dev/null)" == PHP\ 8.2* ]] && PHP_VERSION="8.3" PHP_MODULE="common,ctype,ldap,fileinfo,iconv,mysql,soap,xsl" PHP_FPM="YES" setup_php
-    sed -i 's/php8.2/php8.3/g' /etc/nginx/conf.d/snipeit.conf
-    setup_composer
+echo "Namestitev Docker-ja ..."
+pct exec $CTID -- bash -c "apt update && apt install -y curl ca-certificates gnupg lsb-release"
 
-    msg_info "Updating ${APP}"
-    $STD apt update
-    $STD apt -y upgrade
+pct exec $CTID -- bash -c "
+curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker.gpg
+echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian \$(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+"
 
-    cp /opt/snipe-it-backup/.env /opt/snipe-it/.env
-    cp -r /opt/snipe-it-backup/public/uploads/ /opt/snipe-it/public/uploads/
-    cp -r /opt/snipe-it-backup/storage/private_uploads /opt/snipe-it/storage/private_uploads
+echo "Ustvarjam mapo za Snipe-IT ..."
+pct exec $CTID -- mkdir -p /opt/snipeit
 
-    cd /opt/snipe-it/
-    export COMPOSER_ALLOW_SUPERUSER=1
-    $STD composer install --no-dev --optimize-autoloader --no-interaction
-    $STD composer dump-autoload
-    $STD php artisan migrate --force
-    $STD php artisan config:clear
-    $STD php artisan route:clear
-    $STD php artisan cache:clear
-    $STD php artisan view:clear
+echo "Zapisujem docker-compose.yml ..."
 
-    chown -R www-data: /opt/snipe-it
-    chmod -R 755 /opt/snipe-it
-    rm -rf /opt/snipe-it-backup
-    msg_ok "Updated ${APP}"
+pct exec $CTID -- bash -c "cat > /opt/snipeit/docker-compose.yml << 'EOF'
+version: '3.8'
 
-    msg_info "Starting Service"
-    systemctl start nginx
-    msg_ok "Started Service"
-    msg_ok "Updated successfully!"
-  fi
-  exit
-}
+services:
+  snipeit:
+    image: snipe/snipe-it:v7.0.9
+    container_name: snipeit
+    restart: unless-stopped
+    ports:
+      - '8080:80'
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - APP_URL=http://YOUR-IP-OR-DOMAIN
+      - APP_TIMEZONE=Europe/Ljubljana
+      - APP_LOCALE=sl-SI
 
-start
-build_container
-description
+      # DB nastavitve
+      - DB_CONNECTION=mysql
+      - DB_HOST=db
+      - DB_DATABASE=snipeit
+      - DB_USERNAME=snipeit
+      - DB_PASSWORD=ChangeMe123!
 
-msg_ok "Completed Successfully!\n"
-echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
-echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
+    depends_on:
+      - db
+    volumes:
+      - ./uploads:/var/lib/snipeit
+
+  db:
+    image: mariadb:10.6
+    container_name: snipeit-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=RootPass123!
+      - MYSQL_DATABASE=snipeit
+      - MYSQL_USER=snipeit
+      - MYSQL_PASSWORD=ChangeMe123!
+    volumes:
+      - ./mysql:/var/lib/mysql
+EOF
+"
+
+echo "Zagon Snipe-IT ..."
+pct exec $CTID -- bash -c "cd /opt/snipeit && docker compose up -d"
+
+IP=$(pct exec $CTID -- hostname -I | awk '{print $1}')
+
+echo ""
+echo "============================================"
+echo "Snipe-IT 7.0.9 Docker je nameščen!"
+echo "Dostop: http://$IP:8080"
+echo ""
+echo "Za reverse proxy (NPM) uporabi:"
+echo "IP: $IP"
+echo "PORT: 8080"
+echo "============================================"
