@@ -44,7 +44,7 @@ function update_script() {
     msg_ok "Backup created"
 
     # Prisili fetch točno v7.0.9 v /opt/snipe-it
-    fetch_and_deploy_gh_release "snipe-it" "grokability/snipe-it" "tarball" "${PINNED_VERSION}" "/opt/snipe-it"
+    fetch_and_deploy_gh_release "snipe-it" "snipe/snipe-it" "tarball" "${PINNED_VERSION}" "/opt/snipe-it"
 
     [[ "$(php -v 2>/dev/null)" == PHP\ 8.2* ]] && PHP_VERSION="8.3" PHP_MODULE="common,ctype,ldap,fileinfo,iconv,mysql,soap,xsl" PHP_FPM="YES" setup_php
     sed -i 's/php8.2/php8.3/g' /etc/nginx/conf.d/snipeit.conf
