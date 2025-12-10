@@ -14,6 +14,8 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 
+PINNED_VERSION="v7.0.9"
+
 header_info "$APP"
 variables
 color
@@ -31,7 +33,8 @@ function update_script() {
     sed -i '/index index.php;/i \        client_max_body_size 100M;' /etc/nginx/conf.d/snipeit.conf
   fi
 
-  if check_for_gh_release "snipe-it" "grokability/snipe-it"; then
+  # NE uporabljamo več check_for_gh_release, ker želimo prisilni "downgrade"
+  if true; then
     msg_info "Stopping Services"
     systemctl stop nginx
     msg_ok "Services Stopped"
@@ -40,7 +43,9 @@ function update_script() {
     mv /opt/snipe-it /opt/snipe-it-backup
     msg_ok "Backup created"
 
-    fetch_and_deploy_gh_release "snipe-it" "grokability/snipe-it" "tarball" "v7.0.9"
+    # Prisili fetch točno v7.0.9 v /opt/snipe-it
+    fetch_and_deploy_gh_release "snipe-it" "grokability/snipe-it" "tarball" "${PINNED_VERSION}" "/opt/snipe-it"
+
     [[ "$(php -v 2>/dev/null)" == PHP\ 8.2* ]] && PHP_VERSION="8.3" PHP_MODULE="common,ctype,ldap,fileinfo,iconv,mysql,soap,xsl" PHP_FPM="YES" setup_php
     sed -i 's/php8.2/php8.3/g' /etc/nginx/conf.d/snipeit.conf
     setup_composer
@@ -48,9 +53,11 @@ function update_script() {
     msg_info "Updating ${APP}"
     $STD apt update
     $STD apt -y upgrade
+
     cp /opt/snipe-it-backup/.env /opt/snipe-it/.env
     cp -r /opt/snipe-it-backup/public/uploads/ /opt/snipe-it/public/uploads/
     cp -r /opt/snipe-it-backup/storage/private_uploads /opt/snipe-it/storage/private_uploads
+
     cd /opt/snipe-it/
     export COMPOSER_ALLOW_SUPERUSER=1
     $STD composer install --no-dev --optimize-autoloader --no-interaction
@@ -60,6 +67,7 @@ function update_script() {
     $STD php artisan route:clear
     $STD php artisan cache:clear
     $STD php artisan view:clear
+
     chown -R www-data: /opt/snipe-it
     chmod -R 755 /opt/snipe-it
     rm -rf /opt/snipe-it-backup
